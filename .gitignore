@@ -1,0 +1,14 @@
+# Angular
+angular-app/node_modules/
+angular-app/.angular/
+angular-app/dist/
+*.log
+
+# Python
+backend-databricks/.env
+backend-databricks/.venv/
+backend-databricks/**/__pycache__/
+*.pyc
+
+# Databricks CLI bundle state
+.databricks/

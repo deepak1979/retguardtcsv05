@@ -1,0 +1,21 @@
+fastapi
+uvicorn[standard]
+pydantic
+
+# Lakebase / Postgres control plane
+psycopg[binary]
+psycopg-pool
+
+# Databricks data-plane engine (SQL Warehouse over Unity Catalog) + Model Serving / Volumes (Phase 4-6)
+databricks-sql-connector
+# Pinned >=0.81.0: databricks-sql-connector's own transitive dependency on databricks-sdk resolves to
+# an older version that lacks the w.postgres module (confirmed by a real deployed-app crash:
+# AttributeError: 'WorkspaceClient' object has no attribute 'postgres') unless pinned explicitly here.
+databricks-sdk>=0.81.0
+
+# PDF document governance (rg/docscan.py, rg/redact.py)
+pypdf
+pymupdf
+
+# HTTP client (rg/vectorsearch.py's embedding calls - Ollama today, Model Serving from Phase 5)
+httpx
