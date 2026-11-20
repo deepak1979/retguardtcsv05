@@ -239,15 +239,21 @@ def _chat(st: dict, system: str, user: str) -> str:
         from databricks.sdk import WorkspaceClient
         from databricks.sdk.errors import DatabricksError
         from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
-        try:
-            r = WorkspaceClient().serving_endpoints.query(
-                name=st["model"],
-                messages=[ChatMessage(role=ChatMessageRole.SYSTEM, content=system),
-                         ChatMessage(role=ChatMessageRole.USER, content=user)],
-                max_tokens=400)
-            return r.choices[0].message.content
-        except DatabricksError as e:
-            raise LlmError(f"Model Serving endpoint '{st['model']}' error: {e}")
+        messages = [ChatMessage(role=ChatMessageRole.SYSTEM, content=system),
+                    ChatMessage(role=ChatMessageRole.USER, content=user)]
+        # This workspace's one usable chat endpoint scales to zero and can take ~60-90s to cold-start,
+        # which both the SDK's own request timeout and the Databricks Apps reverse proxy's hard
+        # (non-configurable) 120s request cap can land right on top of - a bare retry right after a
+        # failed first attempt almost always hits an already-warm model and returns quickly (confirmed
+        # empirically: a timed-out CLI call followed immediately by a retry succeeded in seconds).
+        last_err: DatabricksError | None = None
+        for attempt in range(2):
+            try:
+                r = WorkspaceClient().serving_endpoints.query(name=st["model"], messages=messages, max_tokens=400)
+                return r.choices[0].message.content
+            except DatabricksError as e:
+                last_err = e
+        raise LlmError(f"Model Serving endpoint '{st['model']}' error: {last_err}")
     try:
         with httpx.Client(timeout=timeout) as c:
             if provider == "OLLAMA":

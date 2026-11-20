@@ -138,15 +138,18 @@ def _chat(st: dict, system: str, user: str) -> str:
     from databricks.sdk import WorkspaceClient
     from databricks.sdk.errors import DatabricksError
     from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
-    try:
-        r = WorkspaceClient().serving_endpoints.query(
-            name=st["model"],
-            messages=[ChatMessage(role=ChatMessageRole.SYSTEM, content=system),
-                     ChatMessage(role=ChatMessageRole.USER, content=user)],
-            max_tokens=300)
-        return r.choices[0].message.content
-    except DatabricksError as e:
-        raise _SoftError(f"Model Serving endpoint '{st['model']}' error: {e}")
+    messages = [ChatMessage(role=ChatMessageRole.SYSTEM, content=system),
+                ChatMessage(role=ChatMessageRole.USER, content=user)]
+    # Same cold-start retry as llm.py's _chat() - this workspace's one usable chat endpoint scales to
+    # zero, and a bare retry right after a failed first attempt almost always hits an already-warm model.
+    last_err: DatabricksError | None = None
+    for attempt in range(2):
+        try:
+            r = WorkspaceClient().serving_endpoints.query(name=st["model"], messages=messages, max_tokens=300)
+            return r.choices[0].message.content
+        except DatabricksError as e:
+            last_err = e
+    raise _SoftError(f"Model Serving endpoint '{st['model']}' error: {last_err}")
 
 
 def _parse_names(reply: str) -> list[str]:

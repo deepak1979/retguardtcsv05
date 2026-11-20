@@ -1,19 +1,22 @@
 bundle:
-  name: retentionguard-v04
+  name: retguard-v05
+
+workspace:
+  root_path: /Workspace/retguard/.bundle/${bundle.name}/${bundle.target}
 
 resources:
   apps:
-    retentionguard-v04:
-      name: retentionguard-v04
-      description: "RetentionGuard v04 - Databricks-only data governance (Lakebase control plane + Unity Catalog data plane)"
+    retguard-v05:
+      name: retguard-v05
+      description: "RetentionGuard v05 - TCS workspace port (Lakebase control plane + Unity Catalog data plane)"
       source_code_path: .
       user_api_scopes:
         - postgres
       resources:
         - name: postgres
           postgres:
-            branch: projects/retentionguard-v04/branches/production
-            database: projects/retentionguard-v04/branches/production/databases/databricks-postgres
+            branch: projects/rglkbase/branches/production
+            database: projects/rglkbase/branches/production/databases/databricks-postgres
             permission: CAN_CONNECT_AND_CREATE
       config:
         command: ["python", "app.py"]

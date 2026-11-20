@@ -1,9 +1,10 @@
 """Connection settings, read from backend-databricks/.env (never committed) or the process environment.
 
-v04 is Databricks-only: the control plane lives in Lakebase (Postgres-compatible) and the one seeded
-data-plane source is a Databricks SQL Warehouse over Unity Catalog. There is no Oracle/SQL
-Server/Snowflake configuration here at all - see RETENTIONGUARD_V4_FUNCTIONALITY.md (once written) for
-why, and the v03 app for the multi-engine version this was forked from.
+v05 is a TCS-workspace port of v04: same Databricks-only architecture (control plane in Lakebase,
+data plane in Unity Catalog over a Databricks SQL Warehouse, no Oracle/SQL Server/Snowflake), just
+pointed at a different Databricks account - the `retguard` catalog and `rglkbase` Lakebase project on
+the TCS Azure workspace, instead of v04's `deepak` catalog and `retentionguard-v04` project. v04
+itself (and its own workspace/resources) is untouched by this fork.
 """
 from __future__ import annotations
 
@@ -27,26 +28,29 @@ _load_env()
 
 # --- Lakebase (Postgres Autoscaling) control plane ---------------------------------------------------
 # The platform's documented auto-injection of PGHOST/PGUSER/LAKEBASE_ENDPOINT etc. from the app's
-# `postgres` resource did not actually happen for this app (confirmed via a real deployed-app crash:
+# `postgres` resource did not actually happen for v04 (confirmed via a real deployed-app crash:
 # LAKEBASE_ENDPOINT came through empty) - rather than keep depending on that working, every value below
 # defaults to this project's one real project/branch/endpoint, hardcoded (these are resource paths, not
 # secrets - the only actual secret, the OAuth token, is still always generated fresh by rg/db.py, never
 # stored). Env vars still override these, e.g. for a future second environment/branch.
-PG_HOST = os.environ.get("PGHOST", "ep-withered-water-d4c8djjs.database.ap-south-1.cloud.databricks.com")
+PG_HOST = os.environ.get("PGHOST", "ep-super-mud-e9p2vh28.database.eastus.azuredatabricks.net")
 PG_PORT = int(os.environ.get("PGPORT", "5432"))
 PG_DATABASE = os.environ.get("PGDATABASE", "databricks_postgres")
-# The deployed app connects as its own service principal (client id); local dev overrides this via
-# .env to the project owner's own username instead (see .env.example).
-PG_USER = os.environ.get("PGUSER", "84ae08ed-e722-450b-8c80-db3baed62c8c")
+# TODO once a Databricks App exists on the TCS workspace and is wired to the rglkbase `postgres`
+# resource: replace this default with that app's own service principal client id (deploy-first
+# ownership model, same as v04 - see rg/db.py's _conninfo()). Until then this defaults to the project
+# owner's own identity, same as v04's local-dev override.
+PG_USER = os.environ.get("PGUSER", "123323@tcs.com")
 # Either a static password (local dev, databricks_superuser grant) or left blank so rg/db.py generates
 # and auto-refreshes a short-lived OAuth token itself via the Databricks SDK (what the deployed app uses).
 PG_PASSWORD = os.environ.get("PGPASSWORD", "")
 PG_SSLMODE = os.environ.get("PGSSLMODE", "require")
 LAKEBASE_ENDPOINT = os.environ.get("LAKEBASE_ENDPOINT",
-                                    "projects/retentionguard-v04/branches/production/endpoints/primary")
+                                    "projects/rglkbase/branches/production/endpoints/primary")
 # Dedicated schema this app creates and owns - the app's role has CAN_CONNECT_AND_CREATE only, which
-# does not include access to Postgres's default 'public' schema (see rg/db.py's _conninfo()).
-PG_SCHEMA = os.environ.get("PGSCHEMA", "rg_v04")
+# does not include access to Postgres's default 'public' schema (see rg/db.py's _conninfo()). All 36
+# rg_ tables + pgvector + HNSW indexes already created here via ddl.init_schema().
+PG_SCHEMA = os.environ.get("PGSCHEMA", "rg_tcs")
 
 # --- Databricks workspace (used to seed the one data-plane source, and for Model Serving/Volumes) ----
 # Host and warehouse HTTP path are workspace identifiers, not secrets (both already appear in every
@@ -55,17 +59,17 @@ PG_SCHEMA = os.environ.get("PGSCHEMA", "rg_v04")
 # (the deployed app's service principal, or the developer's own CLI profile locally) via the SDK's
 # own auto-config when no token is stored, so RG_DATA_SOURCE never needs a plaintext PAT at all. Set
 # DATABRICKS_TOKEN in .env only if you specifically want PAT-based auth for local development instead.
-DATABRICKS_HOST = os.environ.get("DATABRICKS_HOST", "dbc-603856c9-19e0.cloud.databricks.com")
+DATABRICKS_HOST = os.environ.get("DATABRICKS_HOST", "adb-7405616218084323.3.azuredatabricks.net")
 DATABRICKS_TOKEN = os.environ.get("DATABRICKS_TOKEN", "")
-DBX_HTTP_PATH = os.environ.get("DBX_HTTP_PATH", "/sql/1.0/warehouses/fbdbcb17a3e62497")  # Serverless Starter Warehouse
-# This workspace's metastore only allows catalog creation via the UI (Default Storage is UI-only, the
-# CLI/API is blocked outright), so v04 reuses the existing 'deepak' catalog (already proven, already
-# used by v3 for its own 'insurance' schema) with its OWN dedicated schemas instead of a new catalog -
-# 'insurance_v04' (data plane, a fresh copy of v3's structure, never v3's live data) and 'rg_v04_app'
-# (holds the documents/redacted UC Volumes). Nothing here is shared with or written by v03.
-DBX_CATALOG = os.environ.get("DBX_CATALOG", "deepak")
-DBX_SCHEMA = os.environ.get("DBX_SCHEMA", "insurance_v04")
-DBX_APP_SCHEMA = os.environ.get("DBX_APP_SCHEMA", "rg_v04_app")
+DBX_HTTP_PATH = os.environ.get("DBX_HTTP_PATH", "/sql/1.0/warehouses/9ed46e1b64adee1e")  # dqx-studio-sql-warehouse
+# Unlike v04's workspace (Default Storage UI-only), this TCS metastore had no usable Default Storage
+# root at all (broken at the account level) - 'retguard' was created via CLI with an explicit
+# --storage-root under an existing external location instead. Two dedicated schemas: 'data' (data
+# plane - 9 insurance tables, synthetic, FK-consistent, already seeded) and 'app' (holds the
+# documents/redacted/archive UC Volumes, already created).
+DBX_CATALOG = os.environ.get("DBX_CATALOG", "retguard")
+DBX_SCHEMA = os.environ.get("DBX_SCHEMA", "data")
+DBX_APP_SCHEMA = os.environ.get("DBX_APP_SCHEMA", "app")
 
 # The schema that holds the scanned insurance (business) tables, for discovery/scan filtering - same
 # role config.SOURCE_SCHEMA played in v03, just always a Unity Catalog schema name here.
