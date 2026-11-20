@@ -2,7 +2,7 @@ import { ApplicationConfig, inject, provideAppInitializer, provideBrowserGlobalE
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import { provideRouter, withComponentInputBinding } from '@angular/router';
 import { routes } from './app.routes';
-import { authInterceptor } from './core/auth';
+import { Auth, authInterceptor } from './core/auth';
 import { apiBaseInterceptor } from './core/api-base';
 import { Branding } from './core/branding';
 
@@ -12,5 +12,8 @@ export const appConfig: ApplicationConfig = {
     provideRouter(routes, withComponentInputBinding()),
     provideHttpClient(withInterceptors([apiBaseInterceptor, authInterceptor])),
     provideAppInitializer(() => inject(Branding).load()),
+    // Must resolve before the router's first navigation/guard check - see Auth.tryObo()'s own
+    // comment for why.
+    provideAppInitializer(() => inject(Auth).tryObo()),
   ],
 };

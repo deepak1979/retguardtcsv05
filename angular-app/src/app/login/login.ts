@@ -34,6 +34,7 @@ import { Branding } from '../core/branding';
           <h2>Sign in</h2>
           <p class="muted sub">Use your data governance account.</p>
 
+          @if (auth.oboError()) { <div class="alert alert-error" role="alert">{{ auth.oboError() }}</div> }
           @if (error()) { <div class="alert alert-error" role="alert">{{ error() }}</div> }
 
           <div class="field">
@@ -70,7 +71,7 @@ import { Branding } from '../core/branding';
   `,
 })
 export class Login {
-  private auth = inject(Auth);
+  protected auth = inject(Auth);
   private router = inject(Router);
   private fb = inject(FormBuilder).nonNullable;
   brand = inject(Branding);

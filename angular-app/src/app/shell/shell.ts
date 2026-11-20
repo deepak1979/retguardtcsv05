@@ -29,7 +29,9 @@ import { Toasts } from '../core/toast';
           <a routerLink="/policies" routerLinkActive="active">Policies</a>
           <a routerLink="/remediation" routerLinkActive="active">Remediation</a>
           <a routerLink="/redaction" routerLinkActive="active">Redaction</a>
-          <a routerLink="/semantic-search" routerLinkActive="active">Semantic search</a>
+          <!-- Semantic search hidden for now - no embedding model available on this workspace yet
+               (see rg/vectorsearch.py; vectorsearch.enabled is also off). Route redirects too, in
+               case someone has the URL - see app.routes.ts. -->
           <a routerLink="/erasure" routerLinkActive="active">Erasure</a>
           <a routerLink="/legal-holds" routerLinkActive="active">Legal holds</a>
           <a routerLink="/organisation" routerLinkActive="active">Organisation</a>

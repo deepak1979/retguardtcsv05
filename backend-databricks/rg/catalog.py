@@ -346,3 +346,146 @@ class Graph:
         return {"table": table, "source": "DIRECT" if not edges else "INHERITED",
                 "via": [f"{e['child_table']}.{e['child_column']} -> {e['parent_table']}.{e['parent_column']}" for e in edges],
                 "country_table": ctable, "country_column": ccol}
+
+
+# --------------------------------------------------------------------------- UC governed-tag write-back
+# Mirrors the reconciliation pass's read side (uc_tags, read at discovery time in _discover_databricks)
+# with the other direction: once a steward AUTHORIZES a finding the classifier itself produced (not one
+# the platform's own tag already confirmed/overrode - see scanner.py's pass 1.6), write that
+# classification back as the column's `pii_classification` tag, so the native platform and this app's
+# own findings converge over time instead of staying two parallel, ever-diverging sources of truth.
+# Off by default (uc_tagging.enabled) - this writes real Unity Catalog governance metadata, a bigger
+# blast radius than any other setting in this app, which is why it needs an explicit opt-in.
+UC_TAGGING_DEFAULTS = {"uc_tagging.enabled": "0"}
+
+
+def uc_tagging_enabled() -> bool:
+    v = db.scalar("SELECT setting_value FROM RG_SETTING WHERE setting_key = 'uc_tagging.enabled'")
+    return (v if v is not None else UC_TAGGING_DEFAULTS["uc_tagging.enabled"]) == "1"
+
+
+def save_uc_tagging_setting(enabled: bool, username: str) -> dict:
+    value = "1" if enabled else "0"
+    n = db.execute("UPDATE RG_SETTING SET setting_value = :v, updated_by = :u, updated_at = now() "
+                   "WHERE setting_key = 'uc_tagging.enabled'", {"v": value, "u": username})
+    if not n:
+        db.execute("INSERT INTO RG_SETTING (setting_key, setting_value, updated_by) VALUES "
+                   "('uc_tagging.enabled', :v, :u)", {"v": value, "u": username})
+    audit(username, "uc_tagging", None, "SETTING", f"enabled={value}")
+    return {"enabled": enabled}
+
+
+def uc_tagging_stats(source_id: int | None = None) -> dict:
+    """Dashboard figure: how many confirmed findings have had their classification written back to
+    Unity Catalog as a real column tag, vs. how many are still eligible (confirmed, classifier-sourced,
+    not yet synced) - the latter is non-zero only when the feature is off, or was off when that finding
+    was confirmed."""
+    where = "WHERE source_id = :s" if source_id else ""
+    p = {"s": source_id} if source_id else {}
+    return db.query_one(
+        f"SELECT COUNT(*) FILTER (WHERE is_uc_tag_applied = 1) AS tagged, "
+        f"COUNT(*) FILTER (WHERE is_uc_tag_applied = 0 AND status = 'CONFIRMED' "
+        f"AND classification_source = 'CLASSIFIER') AS eligible_untagged "
+        f"FROM RG_FINDING {where}", p)
+
+
+def _apply_tag(f: dict, username: str) -> bool:
+    """Writes f's classification to Unity Catalog and marks it synced. No gating here - callers
+    (sync_uc_tag for the per-decide path, commit_uc_tags for the manual button) decide when this is
+    appropriate to call; this function just does the write."""
+    engine = engines.for_source(f["source_id"])
+    if engine.name != "DATABRICKS":
+        return False
+    code = f["data_element"].replace("'", "''")
+    engine.execute(
+        f"ALTER TABLE {engine.ident(f['table_name'])} ALTER COLUMN {engine.ident(f['column_name'])} "
+        f"SET TAGS ('pii_classification' = '{code}')")
+    db.execute("UPDATE RG_FINDING SET is_uc_tag_applied = 1 WHERE finding_id = :i", {"i": f["finding_id"]})
+    audit(username, "uc_tag", f["finding_id"], "SYNC",
+          f"{f['table_name']}.{f['column_name']} tagged pii_classification={f['data_element']}")
+    return True
+
+
+def _remove_tag(f: dict, username: str, reason: str) -> bool:
+    engine = engines.for_source(f["source_id"])
+    if engine.name == "DATABRICKS":
+        engine.execute(
+            f"ALTER TABLE {engine.ident(f['table_name'])} ALTER COLUMN {engine.ident(f['column_name'])} "
+            f"UNSET TAGS ('pii_classification')")
+    db.execute("UPDATE RG_FINDING SET is_uc_tag_applied = 0 WHERE finding_id = :i", {"i": f["finding_id"]})
+    audit(username, "uc_tag", f["finding_id"], "UNSYNC", f"{f['table_name']}.{f['column_name']} untagged pii_classification - {reason}")
+    return True
+
+
+def sync_uc_tag(finding_id: int, username: str) -> dict:
+    """Writes finding_id's classification back to Unity Catalog, but ONLY when: the feature is on, the
+    column has no native tag already (classification_source == 'CLASSIFIER' - a NATIVE_CONFIRMED/
+    NATIVE_OVERRIDE finding means a tag is already there, which is exactly why it got that label), and
+    it hasn't been synced before. Never overwrites an existing tag, whoever or whatever set it. Called
+    automatically from scanner.decide() on CONFIRMED - gated by uc_tagging_enabled() because that path
+    is implicit, unlike the explicit commit_uc_tags() button below."""
+    if not uc_tagging_enabled():
+        return {"synced": False, "reason": "UC auto-tagging is switched off"}
+    f = db.query_one("SELECT * FROM RG_FINDING WHERE finding_id = :i", {"i": finding_id})
+    if not f:
+        raise ValueError(f"Finding {finding_id} not found")
+    if f["is_uc_tag_applied"]:
+        return {"synced": False, "reason": "Already synced"}
+    if f["classification_source"] != "CLASSIFIER":
+        return {"synced": False, "reason": "Column already has a native UC tag"}
+    if not _apply_tag(f, username):
+        return {"synced": False, "reason": f"UC tagging is not available for this source"}
+    return {"synced": True}
+
+
+def unsync_uc_tag(finding_id: int, username: str) -> dict:
+    """The reverse of sync_uc_tag(): called automatically from scanner.decide() when a finding that WAS
+    confirmed (and so had a tag written) is later REJECTED - a steward reversing their own decision must
+    reverse the UC write too, or the tag silently keeps asserting a classification the steward just said
+    is wrong. No-op if this finding never had an app-written tag (nothing to undo)."""
+    f = db.query_one("SELECT * FROM RG_FINDING WHERE finding_id = :i", {"i": finding_id})
+    if not f or not f["is_uc_tag_applied"]:
+        return {"removed": False}
+    _remove_tag(f, username, "finding rejected")
+    return {"removed": True}
+
+
+def commit_uc_tags(username: str, source_id: int | None = None) -> dict:
+    """The 'UC Commit' button: reconciles Unity Catalog tags against EVERY finding's CURRENT status
+    right now, in one pass - not gated by uc_tagging_enabled(), since pressing this button is itself
+    the explicit authorization (unlike the automatic per-decide sync/unsync, which only fires when that
+    setting is on). For each finding: CONFIRMED + classifier-sourced + not yet tagged -> apply the tag;
+    tagged but no longer CONFIRMED (rejected, or reopened back to review) -> remove it. A finding that's
+    already consistent with its own status is left untouched either way."""
+    where = "WHERE source_id = :s" if source_id else ""
+    p = {"s": source_id} if source_id else {}
+    findings = db.query(f"SELECT * FROM RG_FINDING {where}", p)
+    tagged = untagged = 0
+    for f in findings:
+        if f["status"] == "CONFIRMED" and f["classification_source"] == "CLASSIFIER" and not f["is_uc_tag_applied"]:
+            if _apply_tag(f, username):
+                tagged += 1
+        elif f["is_uc_tag_applied"] and f["status"] != "CONFIRMED":
+            if _remove_tag(f, username, "no longer confirmed as of this commit"):
+                untagged += 1
+    audit(username, "uc_tag", None, "COMMIT", f"{tagged} tagged, {untagged} untagged")
+    return {"tagged": tagged, "untagged": untagged}
+
+
+def unset_uc_tags_for_source(source_id: int) -> int:
+    """Removes every UC tag THIS APP applied for the given source - never one that was already there
+    independently. Used by snapshot.clear_all()/restore() so a demo reset doesn't leave stale
+    app-written tags behind for the next scan to read back as 'native' and treat as authoritative."""
+    rows = db.query(
+        "SELECT table_name, column_name FROM RG_FINDING WHERE source_id = :s AND is_uc_tag_applied = 1",
+        {"s": source_id})
+    if not rows:
+        return 0
+    engine = engines.for_source(source_id)
+    if engine.name != "DATABRICKS":
+        return 0
+    for r in rows:
+        engine.execute(
+            f"ALTER TABLE {engine.ident(r['table_name'])} ALTER COLUMN {engine.ident(r['column_name'])} "
+            f"UNSET TAGS ('pii_classification')")
+    return len(rows)

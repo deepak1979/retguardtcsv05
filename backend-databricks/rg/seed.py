@@ -15,13 +15,14 @@ def hash_pw(password: str, salt: str) -> str:
 
 
 def seed() -> None:
+    # v05 (TCS): everyone else authenticates via Databricks OBO + workspace group membership
+    # (retguard-admins/retguard-stewards/retguard-viewers - see rg/api.py's current_user()), not a
+    # password this app manages. This one row is Deepak's own explicit personal fallback, kept only
+    # for him by request - no other demo accounts are seeded.
     if not db.scalar("SELECT COUNT(*) FROM RG_USER"):
-        for username, pw, name, role in [("admin", "admin123", "Alex Admin", "admin"),
-                                         ("steward", "steward123", "Sam Steward", "steward"),
-                                         ("viewer", "viewer123", "Vera Viewer", "viewer")]:
-            salt = secrets.token_hex(8)
-            db.insert("RG_USER", {"username": username, "password_hash": hash_pw(pw, salt), "salt": salt,
-                                  "full_name": name, "role": role}, "user_id")
+        salt = secrets.token_hex(8)
+        db.insert("RG_USER", {"username": "deepak", "password_hash": hash_pw("deepak123", salt), "salt": salt,
+                              "full_name": "Deepak", "role": "admin"}, "user_id")
 
     if not db.scalar("SELECT COUNT(*) FROM RG_DATA_SOURCE"):
         db.insert("RG_DATA_SOURCE", {"name": f"Insurance Databricks ({config.DBX_CATALOG}.{config.DBX_SCHEMA})",

@@ -255,6 +255,10 @@ export interface LlmOpinion {
   reason: string | null; provider: string; model: string; samples_sent: number; sample_level: LlmSampleLevel;
   created_by: string; created_at: string; cached?: boolean;
 }
+/** Off by default - writes a real Unity Catalog `pii_classification` column tag the moment a steward
+ * CONFIRMS a classifier-sourced finding, but only when the column has no native tag already. */
+export interface UcTaggingSettings { enabled: boolean; }
+export interface UcTaggingStats { tagged: number; eligible_untagged: number; }
 /** Y = this record is on hold, COVERED = held because of a related record, N = free. */
 export type HoldFlag = 'Y' | 'N' | 'COVERED';
 export interface HoldCustomerHit {

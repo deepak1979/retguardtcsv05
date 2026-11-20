@@ -6,11 +6,11 @@ import re
 import secrets
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from . import archive, catalog, connectors, db, docscan, engines, erasure, holds, llm, name_llm, org, policy, redact, remediation, scanner, scope, seed, snapshot, vectorsearch
+from . import archive, catalog, config, connectors, db, docscan, engines, erasure, holds, llm, name_llm, org, policy, redact, remediation, scanner, scope, seed, snapshot, vectorsearch
 from .bootstrap import bootstrap
 from .common import audit
 from .policy import NotFound, ValidationError
@@ -228,6 +228,10 @@ class VectorSearchIn(BaseModel):
     embed_endpoint: Optional[str] = None
 
 
+class UcTaggingIn(BaseModel):
+    enabled: bool
+
+
 class VectorQueryIn(BaseModel):
     query: str
     doc_source_id: Optional[int] = None
@@ -238,20 +242,79 @@ class NoteIn(BaseModel):
 
 
 # --------------------------------------------------------------------------- auth
-# v04: the session token travels in a custom header (X-Rg-Token), not the standard `Authorization:
-# Bearer ...` header. Confirmed by direct diagnostic logging on the deployed app: a request that the
-# frontend had genuinely attached `Authorization: Bearer <token>` to arrived at this handler with no
-# Authorization header at all - Databricks Apps' own reverse proxy (which gates every request behind
-# its own OAuth check) reserves that header for its own SSO/OAuth use and does not forward an
-# application-chosen Bearer token through to the container untouched. A custom header name isn't
-# reserved the same way.
-def current_user(x_rg_token: str | None = Header(default=None)) -> dict:
+# v05 (TCS): identity + role come from Databricks itself wherever possible, not this app's own
+# username/password store. Databricks Apps' reverse proxy already gates every request behind Entra ID
+# before it ever reaches this container; once On-Behalf-Of is declared (user_api_scopes in
+# databricks.yml), it also forwards that signed-in visitor's own OAuth token via
+# `x-forwarded-access-token` on every request. A user-scoped WorkspaceClient built from that token can
+# call current_user.me() - which returns both identity (email) AND the visitor's real Databricks group
+# memberships in one call - so role comes from workspace group membership (retguard-admins/
+# retguard-stewards/retguard-viewers), never a column this app manages itself.
+#
+# The OLD username/password/RG_SESSION path (still below) is NOT removed - by Deepak's explicit
+# request it's kept as his own personal fallback login only (one RG_USER row: deepak/deepak123,
+# role=admin - see seed.py). Every other person goes through OBO+groups exclusively; nobody else gets
+# an RG_USER row or a password. v04's comment about X-Rg-Token surviving the reverse proxy (a custom
+# header name isn't reserved the way `Authorization` is) still applies to that one fallback path.
+_GROUP_ROLES = {"retguard-admins": "admin", "retguard-stewards": "steward", "retguard-viewers": "viewer"}
+
+
+def _obo_identity(token: str) -> dict:
+    """The signed-in visitor's own identity + every Databricks group they belong to, resolved via a
+    user-scoped WorkspaceClient built from their OBO token. Raises (never swallows) - current_user()
+    below needs to tell 'no OBO header at all' apart from 'a header was there but resolving it failed',
+    which a blanket except-and-return-None here would make indistinguishable (both looked like a plain
+    401 in an earlier version of this function - exactly what hid the real cause the first time)."""
+    from databricks.sdk import WorkspaceClient
+    from databricks.sdk.core import Config
+    # auth_type="pat" is required here, not optional: the container always has DATABRICKS_CLIENT_ID/
+    # DATABRICKS_CLIENT_SECRET set too (the app's own SP credentials, injected by the platform by
+    # default), so passing just `token=` without pinning the auth type makes the SDK see two
+    # candidate auth methods and refuse to pick, raising exactly this error - confirmed live.
+    w = WorkspaceClient(config=Config(host=config.DATABRICKS_HOST, token=token, auth_type="pat"))
+    me = w.current_user.me()
+    groups = sorted({g.display for g in (me.groups or []) if g.display})
+    return {"username": me.user_name, "full_name": me.display_name or me.user_name, "groups": groups}
+
+
+def current_user(request: Request, x_rg_token: str | None = Header(default=None)) -> dict:
+    obo_token = request.headers.get("x-forwarded-access-token")
+    identity = None
+    obo_error = None
+    if obo_token:
+        try:
+            identity = _obo_identity(obo_token)
+        except Exception as e:
+            obo_error = f"{type(e).__name__}: {e}"
+    if identity:
+        role = next((r for g, r in _GROUP_ROLES.items() if g in identity["groups"]), None)
+        if role:
+            return {"user_id": None, "username": identity["username"], "full_name": identity["full_name"],
+                    "role": role, "token": None}
+    # No role from OBO (or no OBO at all, or OBO errored) - try the password fallback before giving up.
+    # This matters: OBO is present on essentially every real browser request once enabled, so treating
+    # "no matching group" as an immediate, unconditional failure would silently break the
+    # deepak/deepak123 fallback too, for every visitor, every time - exactly the regression this fixes.
     token = (x_rg_token or "").strip()
     user = db.query_one("SELECT user_id, username, full_name, role FROM RG_SESSION WHERE token = :t",
                         {"t": token}) if token else None
-    if not user:
-        raise HTTPException(401, "Not authenticated")
-    return {**user, "token": token}
+    if user:
+        return {**user, "token": token}
+    if identity:
+        groups_txt = ", ".join(identity["groups"]) or "(none seen)"
+        raise HTTPException(403, f"Signed in as {identity['username']} - Databricks groups: {groups_txt}. "
+                            "Not a member of retguard-admins, retguard-stewards, or retguard-viewers yet - "
+                            "ask an admin to add you to one, or use the deepak login as a fallback.")
+    if obo_token:
+        raise HTTPException(403, f"Databricks sent an OBO token, but resolving it failed: {obo_error}. "
+                            "Use the deepak login as a fallback.")
+    # 403, not 401: a blank /login page with no banner (confirmed live) suggests the Apps reverse
+    # proxy may intercept a plain 401 from this app as its own "needs auth" signal rather than passing
+    # it through untouched - 403 unambiguously means "authenticated, just not authorized" and can't be
+    # confused with that.
+    raise HTTPException(403, "No OBO token was present on this request at all - Databricks Apps "
+                        "'user authorization' is likely not enabled for this workspace. Use the "
+                        "deepak login as a fallback.")
 
 
 def _need(*roles: str):
@@ -596,6 +659,29 @@ def vs_index_document(document_id: int, user: dict = Depends(editor)):
 @app.post("/api/vector-search/search")
 def vs_search(body: VectorQueryIn, user: dict = Depends(current_user)):
     return _vs(vectorsearch.search, body.query, user["username"], user["role"], body.doc_source_id)
+
+
+# --------------------------------------------------------------------------- Unity Catalog governed-tag write-back
+# Off by default - writes real UC governance metadata (ALTER TABLE ... SET TAGS), not just app-internal
+# state. See rg/catalog.py's sync_uc_tag()/uc_tagging_stats() module docstring section for the design.
+@app.get("/api/uc-tagging/settings")
+def uc_tagging_settings(_: dict = Depends(current_user)):
+    return {"enabled": catalog.uc_tagging_enabled()}
+
+
+@app.put("/api/uc-tagging/settings")
+def uc_tagging_save(body: UcTaggingIn, user: dict = Depends(admin)):
+    return catalog.save_uc_tagging_setting(body.enabled, user["username"])
+
+
+@app.get("/api/uc-tagging/stats")
+def uc_tagging_stats(source_id: Optional[int] = None, _: dict = Depends(current_user)):
+    return catalog.uc_tagging_stats(source_id)
+
+
+@app.post("/api/uc-tagging/commit")
+def uc_tagging_commit(source_id: Optional[int] = None, user: dict = Depends(admin)):
+    return catalog.commit_uc_tags(user["username"], source_id)
 
 
 @app.get("/api/classifiers")

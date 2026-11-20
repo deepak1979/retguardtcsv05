@@ -284,8 +284,15 @@ VECTOR_INDEXES: list[tuple[str, str]] = [
 
 
 # Columns/constraints added after v04's first release: (table, column, ALTER statement). Applied once,
-# idempotently, by migrate() below. Starts empty - v04 has no pre-existing installs to carry forward yet.
-MIGRATIONS: list[tuple[str, str, str]] = []
+# idempotently, by migrate() below.
+MIGRATIONS: list[tuple[str, str, str]] = [
+    # TCS v05: tracks whether this finding's classification was written back to the source platform's
+    # own Unity Catalog column tag (see rg/catalog.py's sync_uc_tag()/unset_uc_tags_for_source()) - so
+    # a demo reset (snapshot.clear_all()/restore()) knows which tags it applied itself and is therefore
+    # safe to remove, versus a tag that was already there from a human or another process.
+    ("rg_finding", "is_uc_tag_applied",
+     "ALTER TABLE rg_finding ADD COLUMN is_uc_tag_applied SMALLINT DEFAULT 0 NOT NULL"),
+]
 
 
 def migrate() -> list[str]:

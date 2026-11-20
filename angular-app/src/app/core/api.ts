@@ -3,7 +3,7 @@ import { Injectable, inject } from '@angular/core';
 import {
   ArchiveEntry, ArchiveFile, AuditEntry, BrandingInfo, Catalog, Classifier, ConnectionTestResult, ConnectorType, Country, Coverage, Dashboard, DocFinding, DocIndexStatus, DocNameLlmSettings, DocRedactionBatch, DocRedactionTask, DocScan, DocSource, EligibleDocument, ErasureRequest, EvaluableGroup, EvaluateResult, Finding, Hierarchy,
   HoldCustomerHit, HoldTree, JurisdictionReport, LegalHold, LlmOpinion, LlmSettings, Lookups, OrgInput, Organization, Policy, PolicyInput, Region, RowPreview, RuleInput, Scan,
-  SearchResult, Snapshot, Source, SourceConnectionInput, Task, VectorSearchSettings, Violation,
+  SearchResult, Snapshot, Source, SourceConnectionInput, Task, UcTaggingSettings, UcTaggingStats, VectorSearchSettings, Violation,
 } from './models';
 
 /** Turns a FastAPI error body (string or pydantic list) into a readable message. */
@@ -146,6 +146,12 @@ export class Api {
   }
   llmTest() { return this.http.post<{ ok: boolean; reply: string; provider: string; model: string }>('/api/llm/test', {}); }
   llmOpinions() { return this.http.get<LlmOpinion[]>('/api/llm/opinions'); }
+
+  // Unity Catalog governed-tag write-back on finding confirmation (off by default)
+  ucTaggingSettings() { return this.http.get<UcTaggingSettings>('/api/uc-tagging/settings'); }
+  saveUcTaggingSettings(body: UcTaggingSettings) { return this.http.put<UcTaggingSettings>('/api/uc-tagging/settings', body); }
+  ucTaggingStats() { return this.http.get<UcTaggingStats>('/api/uc-tagging/stats'); }
+  ucTaggingCommit() { return this.http.post<{ tagged: number; untagged: number }>('/api/uc-tagging/commit', {}); }
   llmOpinion(findingId: number, refresh = false) {
     return this.http.post<LlmOpinion>(`/api/llm/opinion/${findingId}`, {}, { params: refresh ? { refresh: 'true' } : {} });
   }

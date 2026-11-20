@@ -4,7 +4,7 @@ import { Api, errorMessage } from '../core/api';
 import { Auth } from '../core/auth';
 import { Confirms } from '../core/confirm';
 import { pct, pretty, tone } from '../core/format';
-import { Classifier, Finding, LlmOpinion, LlmSampleLevel, LlmSettings, Lookups } from '../core/models';
+import { Classifier, Finding, LlmOpinion, LlmSampleLevel, LlmSettings, Lookups, UcTaggingSettings, UcTaggingStats } from '../core/models';
 import { Toasts } from '../core/toast';
 
 interface ClassifierDraft {
@@ -37,6 +37,25 @@ interface ClassifierDraft {
             @if (auth.isAdmin()) { <button class="btn btn-sm" (click)="openLlm()">Configure</button> }
           </div>
         }
+        @if (ucTagging(); as u) {
+          <div class="llm-box" title="Writes this finding's classification to Unity Catalog as a pii_classification column tag the moment it's confirmed - only when the column has no native tag already">
+            <label class="switch" [title]="auth.isAdmin() ? 'Switch Unity Catalog auto-tagging on or off' : 'Only an admin can change this'">
+              <input type="checkbox" role="switch" aria-label="Unity Catalog auto-tagging" [checked]="u.enabled" [disabled]="!auth.isAdmin() || ucTaggingBusy()"
+                     (change)="toggleUcTagging($any($event.target).checked)" />
+              <span class="track"><i></i></span>
+            </label>
+            <div class="llm-text">
+              <b>UC auto-tagging</b>
+              <span class="muted small">{{ u.enabled ? 'On - confirming a finding tags its column in Unity Catalog' : 'Off - confirming only updates this app' }}</span>
+            </div>
+            @if (auth.isAdmin()) {
+              <button class="btn btn-sm" [disabled]="ucCommitBusy()" (click)="commitUcTags()"
+                      title="Reconcile Unity Catalog tags against every finding's status right now - tags anything CONFIRMED that's missing a tag, untags anything that's no longer CONFIRMED. Works even while auto-tagging is off.">
+                {{ ucCommitBusy() ? 'Committing…' : 'UC Commit' }}
+              </button>
+            }
+          </div>
+        }
       </div>
 
       <div class="tabs">
@@ -47,6 +66,11 @@ interface ClassifierDraft {
       @if (tab() === 'findings') {
         <div class="kpis">
           @for (k of kpis(); track k.label) { <div class="card kpi"><span class="muted">{{ k.label }}</span><strong>{{ k.value }}</strong></div> }
+          @if (ucStats(); as s) {
+            <div class="card kpi" title="Confirmed findings whose classification has been written to Unity Catalog as a pii_classification column tag">
+              <span class="muted">Tagged in UC</span><strong>{{ s.tagged }}</strong>
+            </div>
+          }
         </div>
         <div class="card">
           <div class="filters">
@@ -358,6 +382,42 @@ export class Findings {
     this.load();
     this.loadClassifiers();
     this.loadLlm();
+    this.loadUcTagging();
+  }
+
+  // ---- Unity Catalog governed-tag write-back on confirmation (off by default)
+  ucTagging = signal<UcTaggingSettings | null>(null);
+  ucStats = signal<UcTaggingStats | null>(null);
+  ucTaggingBusy = signal(false);
+
+  loadUcTagging() {
+    this.api.ucTaggingSettings().subscribe({ next: (s) => this.ucTagging.set(s), error: () => this.ucTagging.set(null) });
+    this.loadUcStats();
+  }
+  loadUcStats() {
+    this.api.ucTaggingStats().subscribe({ next: (s) => this.ucStats.set(s), error: () => this.ucStats.set(null) });
+  }
+  toggleUcTagging(on: boolean) {
+    this.ucTaggingBusy.set(true);
+    this.api.saveUcTaggingSettings({ enabled: on }).subscribe({
+      next: (s) => {
+        this.ucTaggingBusy.set(false); this.ucTagging.set(s);
+        this.toasts.ok(s.enabled ? 'UC auto-tagging is on' : 'UC auto-tagging is off');
+      },
+      error: (e) => { this.ucTaggingBusy.set(false); this.toasts.error(errorMessage(e)); this.loadUcTagging(); },
+    });
+  }
+
+  ucCommitBusy = signal(false);
+  commitUcTags() {
+    this.ucCommitBusy.set(true);
+    this.api.ucTaggingCommit().subscribe({
+      next: (r) => {
+        this.ucCommitBusy.set(false); this.loadUcStats();
+        this.toasts.ok(`UC Commit: ${r.tagged} tagged, ${r.untagged} untagged`);
+      },
+      error: (e) => { this.ucCommitBusy.set(false); this.toasts.error(errorMessage(e)); },
+    });
   }
 
   loadLlm() {
@@ -477,7 +537,11 @@ export class Findings {
 
   decide(f: Finding, status: string) {
     this.api.decide(f.finding_id, status).subscribe({
-      next: () => { this.toasts.ok(`${f.table_name}.${f.column_name} ${status.toLowerCase()}`); this.load(); },
+      next: () => {
+        this.toasts.ok(`${f.table_name}.${f.column_name} ${status.toLowerCase()}`);
+        this.load();
+        if (status === 'CONFIRMED' && this.ucTagging()?.enabled) this.loadUcStats();
+      },
       error: (e) => this.toasts.error(errorMessage(e)),
     });
   }

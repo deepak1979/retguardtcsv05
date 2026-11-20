@@ -1,12 +1,11 @@
 import { Routes } from '@angular/router';
-import { authGuard } from './core/auth';
+import { authGuard, guestGuard } from './core/auth';
 import { Login } from './login/login';
 import { Shell } from './shell/shell';
 import { Dashboard } from './dashboard/dashboard';
 import { Sources } from './sources/sources';
 import { Documents } from './documents/documents';
 import { Redaction } from './redaction/redaction';
-import { Search } from './search/search';
 import { Findings } from './findings/findings';
 import { Lineage } from './lineage/lineage';
 import { PoliciesList } from './policies/policies-list';
@@ -18,7 +17,7 @@ import { AuditLog } from './audit/audit-log';
 import { Organisation } from './org/organisation';
 
 export const routes: Routes = [
-  { path: 'login', component: Login },
+  { path: 'login', component: Login, canActivate: [guestGuard] },
   {
     path: '',
     component: Shell,
@@ -33,7 +32,9 @@ export const routes: Routes = [
       { path: 'policies/:id', component: PolicyDetail },
       { path: 'remediation', component: Remediation },
       { path: 'redaction', component: Redaction },
-      { path: 'semantic-search', component: Search },
+      // Hidden for now (no embedding model on this workspace) - redirect rather than remove, so
+      // turning it back on later is just restoring these two lines plus the nav link in shell.ts.
+      { path: 'semantic-search', redirectTo: 'dashboard' },
       { path: 'erasure', component: Erasure },
       { path: 'legal-holds', component: LegalHolds },
       { path: 'organisation', component: Organisation },

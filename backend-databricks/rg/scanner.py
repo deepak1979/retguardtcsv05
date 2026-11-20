@@ -432,4 +432,12 @@ def decide(finding_id: int, status: str, username: str) -> dict:
     db.execute("UPDATE RG_FINDING SET status=:s, decided_by=:u, decided_at=now(), updated_at=now() "
                "WHERE finding_id=:i", {"s": status, "u": username, "i": finding_id})
     audit(username, "finding", finding_id, status, f"{f['table_name']}.{f['column_name']} as {f['data_element']}")
+    from . import catalog  # local import: catalog.py doesn't import scanner, but avoid any future cycle
+    try:
+        if status == "CONFIRMED":
+            catalog.sync_uc_tag(finding_id, username)
+        else:  # REJECTED - reverse a prior CONFIRMED write, if this finding ever had one
+            catalog.unsync_uc_tag(finding_id, username)
+    except Exception as e:  # noqa: BLE001 - a UC write failure must not block the steward's own decision
+        print(f"[scanner.decide] UC tag sync skipped for finding {finding_id}: {e}")
     return db.query_one("SELECT * FROM RG_FINDING WHERE finding_id=:i", {"i": finding_id})

@@ -143,9 +143,18 @@ def clear_all(username: str) -> dict:
     """The full demo reset, across every data source: everything `restore` resets, plus the findings, scans,
     catalog, lineage and archive it deliberately leaves alone. LLM opinions are tied to findings (which every
     source just had wiped) and are cleared once at the end rather than per source."""
+    from . import catalog  # local import: catalog.py doesn't import snapshot, but avoid any future cycle
+
     source_ids = [r["source_id"] for r in db.query("SELECT source_id FROM RG_DATA_SOURCE ORDER BY source_id")]
     total_restored = 0
+    total_uc_tags_removed = 0
     for sid in source_ids:
+        # Unity Catalog tags live on the column, not the data - restoring rows doesn't touch them, and
+        # the findings that recorded which columns got auto-tagged are about to be wiped below. Remove
+        # any tag this app itself applied BEFORE that happens, so the next scan starts from the same
+        # clean slate for UC governance metadata as it does for everything else a reset touches. Never
+        # touches a tag that was already there independently (see catalog.unset_uc_tags_for_source()).
+        total_uc_tags_removed += catalog.unset_uc_tags_for_source(sid)
         engine = engines.for_source(sid)
         snaps = {s["table_name"]: s["backup_table"] for s in
                 db.query("SELECT table_name, backup_table FROM RG_SNAPSHOT WHERE source_id = :s", {"s": sid})}
@@ -204,9 +213,10 @@ def clear_all(username: str) -> dict:
         audit(username, "snapshot", None, "CLEAR_ALL",
               f"{total_restored} table(s) restored across {len(source_ids)} source(s); findings, catalog, scans, "
               f"archive and lifecycle all cleared; {len(doc_source_ids)} document source(s) reset "
-              f"({total_chunks_cleared} vector chunk(s) cleared)", conn)
+              f"({total_chunks_cleared} vector chunk(s) cleared; {total_uc_tags_removed} UC tag(s) removed)", conn)
     volumes.delete_tree(archive.ROOT)              # exported archive files are orphaned once RG_ARCHIVE is wiped
-    return {"tables_restored": total_restored, "chunks_cleared": total_chunks_cleared}
+    return {"tables_restored": total_restored, "chunks_cleared": total_chunks_cleared,
+            "uc_tags_removed": total_uc_tags_removed}
 
 
 def restore_tables(table_names: list[str], username: str, source_id: int = 1) -> dict:

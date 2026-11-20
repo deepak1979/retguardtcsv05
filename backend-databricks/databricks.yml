@@ -12,6 +12,10 @@ resources:
       source_code_path: .
       user_api_scopes:
         - postgres
+        # On-Behalf-Of identity (x-forwarded-access-token -> current_user.me(), see rg/api.py's
+        # current_user()) needs no extra scope here - iam.current-user:read/iam.access-control:read
+        # are platform defaults (confirmed via this app's own effective_user_api_scopes before this
+        # line even existed) and the API rejects explicitly re-requesting a default scope by name.
       resources:
         - name: postgres
           postgres:

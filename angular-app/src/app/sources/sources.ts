@@ -27,7 +27,7 @@ const MODES = [
         <div class="row" style="gap:10px;flex:none">
           <div class="domain-toggle" role="group" aria-label="Domain">
             <button type="button" class="domain-opt" [class.on]="domain() === 'INSURANCE'" (click)="setDomain('INSURANCE')">Insurance</button>
-            <button type="button" class="domain-opt" [class.on]="domain() === 'BANKING'" (click)="setDomain('BANKING')">Banking</button>
+            <button type="button" class="domain-opt" disabled title="Not built out yet - coming later">Banking</button>
           </div>
           @if (auth.isAdmin()) {
             <button class="btn btn-primary" (click)="openAddSource()">+ Add a data source</button>
@@ -298,6 +298,7 @@ const MODES = [
     .domain-toggle { display: flex; flex: none; border: 1px solid var(--border); border-radius: 999px; padding: 3px; background: #fff; }
     .domain-opt { border: none; background: none; font: inherit; font-weight: 600; font-size: 13px; padding: 7px 16px; border-radius: 999px; cursor: pointer; color: var(--muted); }
     .domain-opt.on { background: var(--primary); color: #fff; }
+    .domain-opt:disabled { cursor: not-allowed; opacity: 0.45; }
     .mode { display: flex; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; cursor: pointer; align-items: flex-start; }
     .mode.on { border-color: var(--primary); background: #f0fdfa; }
     .mode input { margin-top: 4px; accent-color: var(--primary); }
